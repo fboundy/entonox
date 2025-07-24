@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from thermopack.cubic import PengRobinson
 from scipy.optimize import brentq
-
+import pandas as pd
 
 MULTS = {"bar": 1e-5, "psi": 1 / 6894.75}
 
@@ -166,30 +166,41 @@ class Mixture(PengRobinson):
             np.array(v),
         )
 
-
-class Mixture(PengRobinson):
-    # ... other methods ...
-
     def constant_volume_depletion(
         self,
-        initial_temp_C,
-        initial_pressure_Pa,
+        initial_temp,
+        initial_pressure,
         initial_n_total=1.0,
         mol_fraction_to_remove=1.0,
         steps=1000,
+        temp_units="C",
+        pressure_units="bar",
         verbose=False,
     ):
         """
-        Stepwise vapor removal at constant volume.
-        Returns a pandas DataFrame indexed by pressure [Pa] with MultiIndex columns:
-        - 'phase' (vapor, liquid, overall)
-        - component names (e.g. N2O, O2)
-        Also includes vapor and liquid fractions as columns.
+        Remove vapor moles stepwise at constant volume and temperature.
+        Inputs:
+        - initial_temp: in temp_units (default 'C')
+        - initial_pressure: in pressure_units (default 'bar')
+        - initial_n_total: initial total moles
+        - mol_fraction_to_remove: fraction of moles to remove over steps
+        - steps: number of steps
+        - temp_units: units for temperature input/output (default 'C')
+        - pressure_units: units for pressure input/output (default 'bar')
+        Returns:
+        - pandas DataFrame indexed by pressure (converted to pressure_units)
+            with MultiIndex columns:
+            ('Total', component), ('Vapor', component), ('Liquid', component),
+            ('Fractions', 'Vapor Fraction'), ('Fractions', 'Liquid Fraction')
+        - Temperature column in temp_units
         """
-        fixed_moles_to_remove = mol_fraction_to_remove / steps
-        T_k = convert_temp(initial_temp_C, "C", inverse=True)
+        # Convert inputs to internal units (K, Pa)
+        T_k = convert_temp(initial_temp, temp_units, inverse=True)
+        P_pa = convert_pressure(initial_pressure, pressure_units, inverse=True)
 
-        flash = self.two_phase_tpflash(T_k, initial_pressure_Pa)
+        fixed_moles_to_remove = mol_fraction_to_remove / steps
+
+        flash = self.two_phase_tpflash(T_k, P_pa)
         betaV = flash.betaV
         z_vapor = flash.y
         z_liquid = flash.x
@@ -200,24 +211,18 @@ class Mixture(PengRobinson):
         n_species_vapor = n_vapor * z_vapor
         n_species_liquid = n_liquid * z_liquid
 
-        v_vap = self.specific_volume(T_k, initial_pressure_Pa, phase=2)
-        v_liq = self.specific_volume(T_k, initial_pressure_Pa, phase=1)
+        v_vap = self.specific_volume(T_k, P_pa, phase=2)
+        v_liq = self.specific_volume(T_k, P_pa, phase=1)
         V_total = (betaV * v_vap + (1 - betaV) * v_liq) * initial_n_total
 
-        pressures = [initial_pressure_Pa]
+        pressures = [P_pa]
         vapor_fractions = [betaV]
-        liquid_fractions = [1 - betaV]
-
-        comps = self.components
-        columns = pd.MultiIndex.from_product([["vapor", "liquid", "overall"], comps], names=["phase", "component"])
-
-        # Initialize data storage
-        data = []
-
-        # Initial compositions
-        overall_comp = betaV * z_vapor + (1 - betaV) * z_liquid
-        row = np.hstack([z_vapor, z_liquid, overall_comp])
-        data.append(np.hstack([z_vapor, z_liquid, overall_comp]))
+        total_compositions = [betaV * z_vapor + (1 - betaV) * z_liquid]
+        vapor_compositions = [z_vapor]
+        liquid_compositions = [z_liquid]
+        vapor_fractions_list = [betaV]
+        liquid_fractions_list = [1 - betaV]
+        temperatures = [T_k]
 
         n_total = initial_n_total
 
@@ -229,9 +234,7 @@ class Mixture(PengRobinson):
                 break
 
             moles_to_remove = min(fixed_moles_to_remove, total_vapor_moles)
-
             removed_vapor_moles = n_species_vapor * (moles_to_remove / total_vapor_moles)
-
             n_species_vapor -= removed_vapor_moles
 
             n_total_after = np.sum(n_species_vapor) + np.sum(n_species_liquid)
@@ -277,10 +280,9 @@ class Mixture(PengRobinson):
 
             flash = self.two_phase_tpflash(T_k, P_new)
             betaV = flash.betaV
-
             if verbose:
                 print(
-                    f"Step {step}: Pressure = {convert_pressure(P_new, 'bar'):.2f} bar, Vapor fraction = {betaV:.4f}"
+                    f"Step {step}: Pressure = {convert_pressure(P_new, pressure_units):.2f} {pressure_units}, Vapor fraction = {betaV:.4f}"
                 )
 
             if betaV < 1e-6 or betaV > 0.99:
@@ -291,6 +293,15 @@ class Mixture(PengRobinson):
             z_vapor = flash.y
             z_liquid = flash.x
 
+            vapor_fractions.append(betaV)
+            total_compositions.append(betaV * z_vapor + (1 - betaV) * z_liquid)
+            vapor_compositions.append(z_vapor)
+            liquid_compositions.append(z_liquid)
+            vapor_fractions_list.append(betaV)
+            liquid_fractions_list.append(1 - betaV)
+            temperatures.append(T_k)
+            pressures.append(P_new)
+
             n_total = n_total_after
             n_vapor = betaV * n_total
             n_liquid = (1 - betaV) * n_total
@@ -298,20 +309,29 @@ class Mixture(PengRobinson):
             n_species_vapor = n_vapor * z_vapor
             n_species_liquid = n_liquid * z_liquid
 
-            pressures.append(P_new)
-            vapor_fractions.append(betaV)
-            liquid_fractions.append(1 - betaV)
-
-            overall_comp = betaV * z_vapor + (1 - betaV) * z_liquid
-            data.append(np.hstack([z_vapor, z_liquid, overall_comp]))
-
-        df = pd.DataFrame(
-            data,
-            columns=columns,
-            index=pd.Index(pressures, name="Pressure_Pa"),
+        # Prepare DataFrame columns with multiindex
+        columns = pd.MultiIndex.from_tuples(
+            [(phase, comp) for phase in ["Total", "Vapor", "Liquid"] for comp in self.components]
+            + [("Fractions", "Vapor Fraction"), ("Fractions", "Liquid Fraction")],
+            names=["Phase", "Component"],
         )
-        df["vapor_fraction"] = vapor_fractions
-        df["liquid_fraction"] = liquid_fractions
+
+        data = []
+        for i in range(len(pressures)):
+            row = []
+            row.extend(total_compositions[i])
+            row.extend(vapor_compositions[i])
+            row.extend(liquid_compositions[i])
+            row.append(vapor_fractions_list[i])
+            row.append(liquid_fractions_list[i])
+            data.append(row)
+
+        index = pd.Index(convert_pressure(np.array(pressures), pressure_units), name=f"Pressure_{pressure_units}")
+
+        df = pd.DataFrame(data, index=index, columns=columns)
+
+        # Add temperature column converted back to requested units
+        df["Temperature_" + temp_units] = convert_temp(np.array(temperatures), "K", inverse=True)
 
         return df
 
@@ -443,28 +463,17 @@ ax.plot(t, p, ls="--", label=f"Cooling Curve: Initial Pressure = {pi} bar")
 
 # Initial flash conditions at cold temperature
 idx_cold = np.argmin(np.abs(t - cold_temp))
-p_cold = convert_pressure(p[idx_cold], "bar", inverse=True)
+p_cold = p[idx_cold]
 
-# Run vapor removal depletion at constant volume
-results = entonox.constant_volume_depletion(
-    initial_temp_C=cold_temp,
-    initial_pressure_Pa=p_cold,
+df_cvd_1 = entonox.constant_volume_depletion(
+    initial_temp=cold_temp,
+    initial_pressure=p_cold,
     initial_n_total=1.0,
-    steps=STEPS,
+    mol_fraction_to_remove=1.0,
+    steps=1000,
 )
 
-(
-    pressures,
-    vapor_fractions,
-    overall_compositions,
-    removed_vapor_composition,
-    liquid_n2o_conc,
-    z_list,
-    n_list,
-) = results
-
-removed_array = np.array(removed_vapor_composition)
-
+# %%
 ax1 = plt.figure().gca()
 ax1.plot(
     convert_pressure(np.array(pressures), units="bar"),
