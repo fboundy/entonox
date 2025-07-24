@@ -1,5 +1,7 @@
 # %%
 import matplotlib.pyplot as plt
+from matplotlib.axes._axes import Axes
+from matplotlib.path import Path
 import numpy as np
 from thermopack.cubic import PengRobinson
 from scipy.optimize import brentq
@@ -116,55 +118,153 @@ class Mixture(PengRobinson):
 
         return fig
 
-    def isochoric_delta_T(self, p_init, T_init, T_final, n_temps=100, temp_units="C", pressure_units="bar"):
-        press = []
-        ti_k = convert_temp(T_init, units=temp_units, inverse=True)
-        tf_k = convert_temp(T_final, units=temp_units, inverse=True)
+    def isochoric_delta_T(
+        self,
+        p_init,
+        T_init,
+        T_final,
+        n_temps=100,
+        temp_units="C",
+        pressure_units="bar",
+        ax=None,
+        plot_start=False,
+        plot_end=False,
+        **kwargs,
+    ):
+        """
+        Change temperature from T_init to T_final at constant molar volume.
+        For each temperature, solve for pressure such that molar volume is constant.
+        Returns results in a pandas DataFrame indexed by pressure with multi-index columns:
+        ('Total', component), ('Vapor', component), ('Liquid', component),
+        ('Fractions', 'Vapor Fraction'), ('Fractions', 'Liquid Fraction'), and temperature column.
+        """
+        ti_k = convert_temp(T_init, temp_units, inverse=True)
+        tf_k = convert_temp(T_final, temp_units, inverse=True)
         dt = (tf_k - ti_k) / n_temps
+        temps = np.arange(ti_k, tf_k + dt, dt)  # Include final step
 
-        temp = np.arange(ti_k, tf_k, dt)
+        p_init_pa = convert_pressure(p_init, pressure_units, inverse=True)
 
-        y = []
-        v = []
-
-        pi_pa = convert_pressure(p_init, pressure_units, inverse=True)
-
-        flash_init = self.two_phase_tpflash(ti_k, pi_pa)
+        # Initial flash at start condition to get volume reference
+        flash_init = self.two_phase_tpflash(ti_k, p_init_pa)
         betaV_init = flash_init.betaV
-        v_vap_init = self.specific_volume(ti_k, pi_pa, phase=2)
-        v_liq_init = self.specific_volume(ti_k, pi_pa, phase=1)
+        v_vap_init = self.specific_volume(ti_k, p_init_pa, phase=2)
+        v_liq_init = self.specific_volume(ti_k, p_init_pa, phase=1)
         V_ref = betaV_init * v_vap_init + (1 - betaV_init) * v_liq_init
 
-        for T in temp:
+        pressures = []
+        vapor_fractions = []
+        total_compositions = []
+        vapor_compositions = []
+        liquid_compositions = []
+        vapor_fraction_list = []
+        liquid_fraction_list = []
+        temperature_list = []
+        regions = []
+
+        for T in temps:
 
             def volume_diff(P):
                 flash = self.two_phase_tpflash(T, P)
                 betaV = flash.betaV
-                v_vap = self.specific_volume(T, P, phase=2)
-                v_liq = self.specific_volume(T, P, phase=1)
-                v_molar = betaV * v_vap + (1 - betaV) * v_liq
+                if betaV < 1e-6:
+                    v_molar = self.specific_volume(T, P, phase=1)
+                elif betaV > 1 - 1e-6 or betaV == -1:
+                    v_molar = self.specific_volume(T, P, phase=2)
+                else:
+                    v_vap = self.specific_volume(T, P, phase=2)
+                    v_liq = self.specific_volume(T, P, phase=1)
+                    v_molar = betaV * v_vap + (1 - betaV) * v_liq
                 return v_molar - V_ref
 
+            # Try to solve for pressure keeping molar volume constant
             try:
                 p_sol = brentq(volume_diff, 1e4, 1e9)
-                press.append(p_sol)
             except ValueError:
-                press.append(np.nan)
+                pressures.append(np.nan)
+                vapor_fractions.append(np.nan)
+                total_compositions.append([np.nan] * len(self.components))
+                vapor_compositions.append([np.nan] * len(self.components))
+                liquid_compositions.append([np.nan] * len(self.components))
+                vapor_fraction_list.append(np.nan)
+                liquid_fraction_list.append(np.nan)
+                temperature_list.append(convert_temp(T, temp_units))
+                continue
 
-            if np.isnan(press[-1]):
-                y.append(np.nan)
-                v.append(np.nan)
+            flash = self.two_phase_tpflash(T, p_sol)
+            betaV = flash.betaV
+            z_total = self._z  # Overall composition from self._z
+
+            # Single phase vapor or liquid
+            if betaV < 1e-6 or betaV == -1:
+                # Single liquid phase
+                vapor_frac = 0.0
+                liquid_frac = 1.0
+                vapor_comp = np.zeros_like(z_total)
+                liquid_comp = z_total
+                total_comp = z_total
+            elif betaV > 1 - 1e-6:
+                # Single vapor phase
+                vapor_frac = 1.0
+                liquid_frac = 0.0
+                vapor_comp = z_total
+                liquid_comp = np.zeros_like(z_total)
+                total_comp = z_total
             else:
-                f = self.two_phase_tpflash(T, p_sol)
-                y.append(f.y)
-                v.append(f.betaV)
+                vapor_frac = betaV
+                liquid_frac = 1 - betaV
+                vapor_comp = flash.y
+                liquid_comp = flash.x
+                total_comp = vapor_frac * vapor_comp + liquid_frac * liquid_comp
 
-        return (
-            convert_temp(temp, temp_units),
-            convert_pressure(np.array(press), pressure_units),
-            np.array(y),
-            np.array(v),
+            pressures.append(p_sol)
+            vapor_fractions.append(vapor_frac)
+            total_compositions.append(total_comp)
+            vapor_compositions.append(vapor_comp)
+            liquid_compositions.append(liquid_comp)
+            vapor_fraction_list.append(vapor_frac)
+            liquid_fraction_list.append(liquid_frac)
+            temperature_list.append(convert_temp(T, temp_units))
+            regions.append(self.phase_region(T, p_sol))
+
+        # Prepare DataFrame columns with multiindex
+        columns = pd.MultiIndex.from_tuples(
+            [(phase, comp) for phase in ["Total", "Vapor", "Liquid"] for comp in self.components]
+            + [("Fractions", "Vapor Fraction"), ("Fractions", "Liquid Fraction")],
+            names=["Phase", "Component"],
         )
+
+        data = []
+        for i in range(len(pressures)):
+            row = []
+            row.extend(total_compositions[i])
+            row.extend(vapor_compositions[i])
+            row.extend(liquid_compositions[i])
+            row.append(vapor_fraction_list[i])
+            row.append(liquid_fraction_list[i])
+            data.append(row)
+
+        index = pd.Index(convert_pressure(np.array(pressures), pressure_units), name=f"Pressure_{pressure_units}")
+
+        df = pd.DataFrame(data, index=index, columns=columns)
+
+        temp_curve = f"Temperature_{temp_units}"
+        # Add temperature column converted back to requested units
+        df[temp_curve] = temperature_list
+        df["Region"] = np.array(regions)
+
+        if ax is not None:
+            if isinstance(ax, Axes):
+                ls = kwargs.pop("ls", "--")
+                marker = kwargs.pop("marker", "o")
+                lines = ax.plot(df[temp_curve], df.index, ls=ls, **kwargs)
+                color = kwargs.pop("color", lines[0].get_color())
+                if plot_start:
+                    ax.plot(df[temp_curve].iloc[0], df.index[0], lw=0, marker=marker, color=color, **kwargs)
+                if plot_end:
+                    ax.plot(df[temp_curve].iloc[-1], df.index[-1], lw=0, marker=marker, color=color, **kwargs)
+
+        return df
 
     def constant_volume_depletion(
         self,
@@ -223,6 +323,7 @@ class Mixture(PengRobinson):
         vapor_fractions_list = [betaV]
         liquid_fractions_list = [1 - betaV]
         temperatures = [T_k]
+        regions = [self.phase_region(T_k, P_pa)]
 
         n_total = initial_n_total
 
@@ -299,8 +400,9 @@ class Mixture(PengRobinson):
             liquid_compositions.append(z_liquid)
             vapor_fractions_list.append(betaV)
             liquid_fractions_list.append(1 - betaV)
-            temperatures.append(T_k)
+            temperatures.append(convert_temp(T_k, temp_units))
             pressures.append(P_new)
+            regions.append(self.phase_region(T_k, P_new))
 
             n_total = n_total_after
             n_vapor = betaV * n_total
@@ -332,8 +434,45 @@ class Mixture(PengRobinson):
 
         # Add temperature column converted back to requested units
         df["Temperature_" + temp_units] = convert_temp(np.array(temperatures), "K", inverse=True)
+        df["Region"] = np.array(regions)
 
         return df
+
+    def is_inside_envelope(self, T, P):
+        env = self.phase_envelope()
+        T_bubble, P_bubble = env._bubble_point(temp_units="K", pressure_units="Pa")
+        T_dew, P_dew = env._dew_point(temp_units="K", pressure_units="Pa")
+
+        # Construct closed polygon by following bubble curve up and dew curve down
+        polygon_points = np.vstack(
+            (np.column_stack((T_bubble, P_bubble)), np.column_stack((T_dew[::-1], P_dew[::-1])))
+        )
+
+        path = Path(polygon_points)
+
+        return path.contains_point((T, P))
+
+    def phase_region(self, T, P):
+        """
+        Return:
+            0 for two-phase (inside envelope)
+            1 for vapor phase (outside envelope, vapor-like)
+            2 for liquid phase (outside envelope, liquid-like)
+        """
+        env = self.phase_envelope()
+        if self.is_inside_envelope(T, P):
+            return 0  # Two-phase
+
+        Tc = env.Tc(units="K")
+        Pc = env.pc(units="Pa")
+
+        if T >= Tc and P <= Pc:
+            return 2  # Vapor
+        elif T <= Tc and P >= Pc:
+            return 1  # Liquid
+        else:
+            # Supercritical or complex region — choose vapor as default
+            return 2
 
 
 class PhaseEnvelope:
@@ -458,9 +597,12 @@ cold_temp = -20
 pi = 200  # bar gauge pressure
 pi_pa = convert_pressure(pi, "bar", inverse=True)
 
-t, p, y, v1 = entonox.isochoric_delta_T(pi, 20, cold_temp)
-ax.plot(t, p, ls="--", label=f"Cooling Curve: Initial Pressure = {pi} bar")
-
+df_idt_1 = entonox.isochoric_delta_T(pi, 20, cold_temp, ax=ax, plot_start=True, plot_end=False)
+# %%
+fig2, ax2 = plt.subplots(1, 1, figsize=(10, 6), layout="tight")
+df_idt_1.plot(y=("Vapor", "N2O"), ax=ax2)
+ax2.set_xlim(200, 0)
+# %%
 # Initial flash conditions at cold temperature
 idx_cold = np.argmin(np.abs(t - cold_temp))
 p_cold = p[idx_cold]
