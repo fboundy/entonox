@@ -123,7 +123,10 @@ def model_error(params, *args):
                 err += e / 1e5
         except:
             pass
-    rmse = (err / n) ** 0.5
+    if n > 0:
+        rmse = (err / n) ** 0.5
+    else:
+        raise ValueError("Unable to calculate model pressure error")
     return rmse
 
 
