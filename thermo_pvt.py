@@ -427,6 +427,14 @@ class Mixture(cls):
                 n_total_after = np.sum(n_species_vapor) + np.sum(n_species_liquid)
                 n_species_after = n_species_vapor + n_species_liquid
 
+                if n_total_after <= 0:
+                    if verbose:
+                        print("All moles depleted. Stopping.")
+                    break
+
+                z_new = n_species_after / n_total_after
+                self.set_z(z_new)
+
                 def volume_diff(P):
                     region = self.phase_region(T_k, P)
 
@@ -544,9 +552,6 @@ class Mixture(cls):
                 else:
                     a, b = bracket
                     P_new = brentq(volume_diff, a, b)
-
-                z_new = n_species_after / np.sum(n_species_after)
-                self.set_z(z_new)
 
                 region = self.phase_region(T_k, P_new)
 
