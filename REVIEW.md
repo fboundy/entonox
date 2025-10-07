@@ -1,0 +1,13 @@
+# Review of `constant_volume_depletion`
+
+## Summary
+The current implementation captures the overall workflow of a constant-volume depletion (CVD) experiment, but there are several numerical and API issues that make it fragile. The points below highlight specific improvement opportunities.
+
+## Detailed comments
+1. **Step-size semantics leak physical units.**  The `step_size` argument is documented as a fraction to remove, but it is applied directly as "moles to remove" without scaling by `initial_n_total`.  As a result, running the method with different initial totals produces inconsistent depletion amounts, and non-integer ratios of `mol_fraction_to_remove / step_size` silently leave a remainder that is never depleted.  Consider interpreting the inputs consistently as fractions of the current vapor inventory and handling the final remainder explicitly.【F:thermo_pvt.py†L370-L399】
+2. **Pressure root bracketing can fail or try negative pressures.**  The code guesses the bracketing interval by scaling the previous pressure by 0.8/1.2 and then by 0.1/10 when that fails.  When the pressure drops quickly the lower bound can become negative and the fallback still assumes monotonic behavior, so Brent's method may raise or converge to a non-physical root.  A safer approach is to clip the lower bound at a small positive pressure, expand the bracket adaptively until the sign changes, and surface a clear error when no bracket exists.【F:thermo_pvt.py†L423-L442】
+3. **Thermodynamic state mutation persists outside the routine.**  The call to `self.set_z(z_new)` mutates the object's overall composition, which means callers observe the final mixture even if they only wanted the depletion trajectory.  Either work on a copy of the fluid object or restore the original composition before returning so that the helper remains side-effect free.【F:thermo_pvt.py†L443-L488】
+4. **Temperature data are converted twice.**  `temperatures` already stores the user-facing units, but the final DataFrame converts them back to Kelvin and again to the target units, potentially introducing floating-point noise and forcing the intermediate "K" assumption.  Persist the list in Kelvin and only convert once when populating the DataFrame, or drop the second conversion.【F:thermo_pvt.py†L386-L514】
+5. **Richer diagnostics would aid convergence issues.**  When the root search fails the method only prints a warning in verbose mode and exits silently.  Surfacing an exception (or returning a status flag) would make downstream workflows easier to debug.【F:thermo_pvt.py†L429-L441】
+
+Addressing these points would make the routine more predictable and numerically robust while keeping the public API intact.

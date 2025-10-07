@@ -1,3 +1,4 @@
+import copy
 import matplotlib.pyplot as plt
 from matplotlib.axes._axes import Axes
 from matplotlib.lines import Line2D
@@ -339,198 +340,282 @@ class Mixture(cls):
             ('Total', component), ('Vapor', component), ('Liquid', component),
             ('Fractions', 'Vapor Fraction'), ('Fractions', 'Liquid Fraction')
         - Temperature column in temp_units
+        - A deep-copied Mixture instance representing the final composition
         """
         # Convert inputs to internal units (K, Pa)
         T_k = convert_temp(initial_temp, temp_units, inverse=True)
         P_pa = convert_pressure(initial_pressure, pressure_units, inverse=True)
 
-        fixed_moles_to_remove = step_size
-        steps = int(mol_fraction_to_remove / step_size)
+        original_z = self._z.copy()
 
-        # Determine initial phase region
-        region = self.phase_region(T_k, P_pa)
+        try:
+            fixed_moles_to_remove = step_size
+            steps = int(mol_fraction_to_remove / step_size)
 
-        if verbose:
-            print(f"Initial phase region: {region} (0=2Phase, 1=Liquid, 2=Vapor)")
-
-        if region == Phase.TWO_PHASE:  # Two-phase region
-            flash = self.two_phase_tpflash(T_k, P_pa)
-            betaV = flash.betaV
-            z_vapor = flash.y
-            z_liquid = flash.x
-        elif region == Phase.LIQUID:  # Single liquid phase
-            betaV = 0.0
-            z_vapor = np.zeros_like(self._z)
-            z_liquid = self._z
-        elif region == Phase.VAPOUR:  # Single vapor phase
-            betaV = 1.0
-            z_vapor = self._z
-            z_liquid = np.zeros_like(self._z)
-
-        n_vapor = betaV * initial_n_total
-        n_liquid = (1 - betaV) * initial_n_total
-
-        n_species_vapor = n_vapor * z_vapor
-        n_species_liquid = n_liquid * z_liquid
-
-        v_vap = self.specific_volume(T_k, P_pa, phase=2)
-        v_liq = self.specific_volume(T_k, P_pa, phase=1)
-        V_total = (betaV * v_vap + (1 - betaV) * v_liq) * initial_n_total
-
-        pressures = [P_pa]
-        vapor_fractions = [betaV]
-        total_compositions = [betaV * z_vapor + (1 - betaV) * z_liquid]
-        vapor_compositions = [z_vapor]
-        liquid_compositions = [z_liquid]
-        liquid_fractions = [1 - betaV]
-        temperatures = [convert_temp(T_k, temp_units)]
-        regions = [self.phase_region(T_k, P_pa)]
-        n_total = [initial_n_total]
-
-        for step in range(steps):
-            total_vapor_moles = np.sum(n_species_vapor)
-            if total_vapor_moles <= 0:
-                if verbose:
-                    print(f"No vapor left to remove at step {step}. Stopping.")
-                break
-
-            moles_to_remove = min(fixed_moles_to_remove, total_vapor_moles)
-            removed_vapor_moles = n_species_vapor * (moles_to_remove / total_vapor_moles)
-            n_species_vapor -= removed_vapor_moles
-
-            n_total_after = np.sum(n_species_vapor) + np.sum(n_species_liquid)
-            n_species_after = n_species_vapor + n_species_liquid
-
-            def volume_diff(P):
-                region = self.phase_region(T_k, P)
-
-                if region == Phase.LIQUID:  # Single liquid
-                    v_molar = self.specific_volume(T_k, P, phase=1)
-                    vapor_frac = 0.0
-                elif region == Phase.VAPOUR:  # Single vapor
-                    v_molar = self.specific_volume(T_k, P, phase=2)
-                    vapor_frac = 1.0
-                else:  # Two-phase
-                    flash = self.two_phase_tpflash(T_k, P)
-                    betaV = flash.betaV
-                    v_vap = self.specific_volume(T_k, P, phase=2)
-                    v_liq = self.specific_volume(T_k, P, phase=1)
-                    v_molar = betaV * v_vap + (1 - betaV) * v_liq
-                    vapor_frac = betaV
-
-                return v_molar * n_total_after - V_total
-
-            a = pressures[-1] * 0.8
-            b = pressures[-1] * 1.2
-
-            fa = volume_diff(a)
-            fb = volume_diff(b)
+            # Determine initial phase region
+            region = self.phase_region(T_k, P_pa)
 
             if verbose:
-                print(f"a: {a:6.1f} b: {a:6.1f} fa: {fa:6.1f} fb: {fb:6.1f} ")
+                print(f"Initial phase region: {region} (0=2Phase, 1=Liquid, 2=Vapor)")
 
-            if np.isnan(fa) or np.isnan(fb) or fa * fb > 0:
-                if verbose:
-                    print(f"Warning: No root bracket found at step {step}, trying wider interval...")
-                a = pressures[-1] * 0.1
-                b = pressures[-1] * 10
-                fa = volume_diff(a)
-                fb = volume_diff(b)
-                if fa * fb > 0:
+            if region == Phase.TWO_PHASE:  # Two-phase region
+                flash = self.two_phase_tpflash(T_k, P_pa)
+                betaV = flash.betaV
+                z_vapor = flash.y
+                z_liquid = flash.x
+            elif region == Phase.LIQUID:  # Single liquid phase
+                betaV = 0.0
+                z_vapor = np.zeros_like(self._z)
+                z_liquid = self._z
+            elif region == Phase.VAPOUR:  # Single vapor phase
+                betaV = 1.0
+                z_vapor = self._z
+                z_liquid = np.zeros_like(self._z)
+
+            n_vapor = betaV * initial_n_total
+            n_liquid = (1 - betaV) * initial_n_total
+
+            n_species_vapor = n_vapor * z_vapor
+            n_species_liquid = n_liquid * z_liquid
+
+            v_vap = self.specific_volume(T_k, P_pa, phase=2)
+            v_liq = self.specific_volume(T_k, P_pa, phase=1)
+            V_total = (betaV * v_vap + (1 - betaV) * v_liq) * initial_n_total
+
+            pressures = [P_pa]
+            vapor_fractions = [betaV]
+            total_compositions = [betaV * z_vapor + (1 - betaV) * z_liquid]
+            vapor_compositions = [z_vapor]
+            liquid_compositions = [z_liquid]
+            liquid_fractions = [1 - betaV]
+            temperatures = [convert_temp(T_k, temp_units)]
+            regions = [self.phase_region(T_k, P_pa)]
+            n_total = [initial_n_total]
+
+            min_pressure = 1.0
+            max_pressure = 1e9
+            root_tol = 1e-8
+
+            for step in range(steps):
+                total_vapor_moles = np.sum(n_species_vapor)
+                if total_vapor_moles <= 0:
                     if verbose:
-                        print("Still no bracket in wider interval. Stopping iteration.")
+                        print(f"No vapor left to remove at step {step}. Stopping.")
                     break
 
-            P_new = brentq(volume_diff, a, b)
+                moles_to_remove = min(fixed_moles_to_remove, total_vapor_moles)
+                removed_vapor_moles = n_species_vapor * (moles_to_remove / total_vapor_moles)
+                n_species_vapor -= removed_vapor_moles
 
-            if verbose:
-                print(f"a: {a:6.1f} b: {a:6.1f} fa: {fa:6.1f} fb: {fb:6.1f} P_new {P_new:6.1f}")
+                n_total_after = np.sum(n_species_vapor) + np.sum(n_species_liquid)
+                n_species_after = n_species_vapor + n_species_liquid
 
-            z_new = n_species_after / np.sum(n_species_after)
-            self.set_z(z_new)
+                def volume_diff(P):
+                    region = self.phase_region(T_k, P)
 
-            region = self.phase_region(T_k, P_new)
+                    if region == Phase.LIQUID:  # Single liquid
+                        v_molar = self.specific_volume(T_k, P, phase=1)
+                        vapor_frac = 0.0
+                    elif region == Phase.VAPOUR:  # Single vapor
+                        v_molar = self.specific_volume(T_k, P, phase=2)
+                        vapor_frac = 1.0
+                    else:  # Two-phase
+                        flash = self.two_phase_tpflash(T_k, P)
+                        betaV = flash.betaV
+                        v_vap = self.specific_volume(T_k, P, phase=2)
+                        v_liq = self.specific_volume(T_k, P, phase=1)
+                        v_molar = betaV * v_vap + (1 - betaV) * v_liq
+                        vapor_frac = betaV
 
-            if region == Phase.TWO_PHASE:  # Two-phase
-                flash = self.two_phase_tpflash(T_k, P_new)
-                betaV = flash.betaV
-                vapor_frac = betaV
-                liquid_frac = 1 - vapor_frac
-                vapor_comp = flash.y
-                liquid_comp = flash.x
-            elif region == Phase.LIQUID:  # Single liquid
-                betaV = 0.0
-                vapor_frac = 0.0
-                liquid_frac = 1.0
-                vapor_comp = np.zeros_like(self._z)
-                liquid_comp = self._z
-            else:  # Single vapor
-                betaV = 1.0
-                vapor_frac = 1.0
-                liquid_frac = 0.0
-                vapor_comp = self._z
-                liquid_comp = np.zeros_like(self._z)
+                    return v_molar * n_total_after - V_total
 
-            if verbose:
-                print(
-                    f"Step {step}: Pressure = {convert_pressure(P_new, pressure_units):.2f} {pressure_units}, Vapor fraction = {betaV:.4f}"
-                )
+                prev_pressure = pressures[-1]
+                prev_total_moles = n_total[-1]
+                ideal_guess = prev_pressure
+                if prev_total_moles > 0:
+                    ideal_guess = prev_pressure * (n_total_after / prev_total_moles)
 
-            vapor_fractions.append(vapor_frac)
-            liquid_fractions.append(liquid_frac)
-            total_compositions.append(vapor_frac * vapor_comp + liquid_frac * liquid_comp)
-            vapor_compositions.append(vapor_comp)
-            liquid_compositions.append(liquid_comp)
-            temperatures.append(convert_temp(T_k, temp_units))
-            pressures.append(P_new)
-            regions.append(region)
+                def try_expand(center, f_center):
+                    if center <= 0 or not np.isfinite(f_center):
+                        return None
 
-            n_total.append(n_total_after)
-            n_vapor = vapor_frac * n_total[-1]
-            n_liquid = liquid_frac * n_total[-1]
+                    if abs(f_center) < root_tol:
+                        return ("root", center)
 
-            # Use vapor_comp and liquid_comp for updated mole counts
-            n_species_vapor = n_vapor * vapor_comp
-            n_species_liquid = n_liquid * liquid_comp
-        # Prepare DataFrame columns with multiindex
-        columns = pd.MultiIndex.from_tuples(
-            [(phase, comp) for phase in ["Total", "Vapor", "Liquid"] for comp in self.components]
-            + [("Fractions", "Vapor Fraction"), ("Fractions", "Liquid Fraction")],
-            names=["Phase", "Component"],
-        )
+                    lower = center
+                    upper = center
+                    f_lower = f_center
+                    f_upper = f_center
+                    expansion = 1.6
 
-        data = []
-        for i in range(len(pressures)):
-            row = []
-            row.extend(total_compositions[i])
-            row.extend(vapor_compositions[i])
-            row.extend(liquid_compositions[i])
-            row.append(vapor_fractions[i])
-            row.append(liquid_fractions[i])
-            data.append(row)
+                    for _ in range(12):
+                        lower = max(lower / expansion, min_pressure)
+                        f_lower = volume_diff(lower)
+                        if np.isfinite(f_lower):
+                            if abs(f_lower) < root_tol:
+                                return ("root", lower)
+                            if f_lower * f_center < 0:
+                                return ("bracket", min(lower, center), max(lower, center))
 
-        index = pd.Index(convert_pressure(np.array(pressures), pressure_units), name=f"Pressure_{pressure_units}")
+                        upper = min(upper * expansion, max_pressure)
+                        f_upper = volume_diff(upper)
+                        if np.isfinite(f_upper):
+                            if abs(f_upper) < root_tol:
+                                return ("root", upper)
+                            if f_upper * f_center < 0:
+                                return ("bracket", min(center, upper), max(center, upper))
 
-        df = pd.DataFrame(data, index=index, columns=columns)
+                    return None
 
-        temp_curve = f"Temperature_{temp_units}"
-        # Add temperature column converted back to requested units
-        df[temp_curve] = convert_temp(np.array(temperatures), "K", inverse=True)
-        df["Region"] = np.array(regions)
-        df["Mol Fraction Remaining"] = np.array(n_total)
+                bracket = None
+                root_pressure = None
 
-        if ax is not None:
-            if isinstance(ax, Axes):
-                ls = kwargs.pop("ls", "--")
-                marker = kwargs.pop("marker", "o")
-                lines = ax.plot(df[temp_curve], df.index, ls=ls, **kwargs)
-                color = kwargs.pop("color", lines[0].get_color())
-                if plot_start:
-                    ax.plot(df[temp_curve].iloc[0], df.index[0], lw=0, marker=marker, color=color, **kwargs)
-                if plot_end:
-                    ax.plot(df[temp_curve].iloc[-1], df.index[-1], lw=0, marker=marker, color=color, **kwargs)
+                for guess in [ideal_guess, prev_pressure]:
+                    if guess <= 0 or not np.isfinite(guess):
+                        continue
+                    f_guess = volume_diff(guess)
+                    if not np.isfinite(f_guess):
+                        continue
+                    result = try_expand(guess, f_guess)
+                    if result is None:
+                        continue
+                    kind, *values = result
+                    if kind == "root":
+                        root_pressure = values[0]
+                        break
+                    if kind == "bracket":
+                        bracket = tuple(values)
+                        break
 
-        return df
+                if root_pressure is None and bracket is None:
+                    if verbose:
+                        print(
+                            "Warning: Falling back to wide pressure scan to bracket root at step",
+                            step,
+                        )
+                    scan_min = max(min_pressure, prev_pressure * 1e-3)
+                    scan_max = min(max_pressure, prev_pressure * 1e3)
+                    if scan_min >= scan_max:
+                        scan_max = scan_min * 1.01
+                    scan_pressures = np.geomspace(scan_min, scan_max, num=25)
+                    scan_values = []
+                    for p in scan_pressures:
+                        val = volume_diff(p)
+                        scan_values.append(val)
+                    for idx in range(len(scan_pressures) - 1):
+                        f1 = scan_values[idx]
+                        f2 = scan_values[idx + 1]
+                        if not np.isfinite(f1) or not np.isfinite(f2):
+                            continue
+                        if abs(f1) < root_tol:
+                            root_pressure = scan_pressures[idx]
+                            break
+                        if abs(f2) < root_tol:
+                            root_pressure = scan_pressures[idx + 1]
+                            break
+                        if f1 * f2 < 0:
+                            bracket = (scan_pressures[idx], scan_pressures[idx + 1])
+                            break
+
+                if root_pressure is None and bracket is None:
+                    if verbose:
+                        print("No valid pressure bracket found. Stopping iteration.")
+                    break
+
+                if root_pressure is not None:
+                    P_new = root_pressure
+                else:
+                    a, b = bracket
+                    P_new = brentq(volume_diff, a, b)
+
+                z_new = n_species_after / np.sum(n_species_after)
+                self.set_z(z_new)
+
+                region = self.phase_region(T_k, P_new)
+
+                if region == Phase.TWO_PHASE:  # Two-phase
+                    flash = self.two_phase_tpflash(T_k, P_new)
+                    betaV = flash.betaV
+                    vapor_frac = betaV
+                    liquid_frac = 1 - vapor_frac
+                    vapor_comp = flash.y
+                    liquid_comp = flash.x
+                elif region == Phase.LIQUID:  # Single liquid
+                    betaV = 0.0
+                    vapor_frac = 0.0
+                    liquid_frac = 1.0
+                    vapor_comp = np.zeros_like(self._z)
+                    liquid_comp = self._z
+                else:  # Single vapor
+                    betaV = 1.0
+                    vapor_frac = 1.0
+                    liquid_frac = 0.0
+                    vapor_comp = self._z
+                    liquid_comp = np.zeros_like(self._z)
+
+                if verbose:
+                    print(
+                        f"Step {step}: Pressure = {convert_pressure(P_new, pressure_units):.2f} {pressure_units}, Vapor fraction = {betaV:.4f}"
+                    )
+
+                vapor_fractions.append(vapor_frac)
+                liquid_fractions.append(liquid_frac)
+                total_compositions.append(vapor_frac * vapor_comp + liquid_frac * liquid_comp)
+                vapor_compositions.append(vapor_comp)
+                liquid_compositions.append(liquid_comp)
+                temperatures.append(convert_temp(T_k, temp_units))
+                pressures.append(P_new)
+                regions.append(region)
+
+                n_total.append(n_total_after)
+                n_vapor = vapor_frac * n_total[-1]
+                n_liquid = liquid_frac * n_total[-1]
+
+                # Use vapor_comp and liquid_comp for updated mole counts
+                n_species_vapor = n_vapor * vapor_comp
+                n_species_liquid = n_liquid * liquid_comp
+            # Prepare DataFrame columns with multiindex
+            columns = pd.MultiIndex.from_tuples(
+                [(phase, comp) for phase in ["Total", "Vapor", "Liquid"] for comp in self.components]
+                + [("Fractions", "Vapor Fraction"), ("Fractions", "Liquid Fraction")],
+                names=["Phase", "Component"],
+            )
+
+            data = []
+            for i in range(len(pressures)):
+                row = []
+                row.extend(total_compositions[i])
+                row.extend(vapor_compositions[i])
+                row.extend(liquid_compositions[i])
+                row.append(vapor_fractions[i])
+                row.append(liquid_fractions[i])
+                data.append(row)
+
+            index = pd.Index(convert_pressure(np.array(pressures), pressure_units), name=f"Pressure_{pressure_units}")
+
+            df = pd.DataFrame(data, index=index, columns=columns)
+
+            temp_curve = f"Temperature_{temp_units}"
+            # Add temperature column converted back to requested units
+            df[temp_curve] = convert_temp(np.array(temperatures), "K", inverse=True)
+            df["Region"] = np.array(regions)
+            df["Mol Fraction Remaining"] = np.array(n_total)
+
+            if ax is not None:
+                if isinstance(ax, Axes):
+                    ls = kwargs.pop("ls", "--")
+                    marker = kwargs.pop("marker", "o")
+                    lines = ax.plot(df[temp_curve], df.index, ls=ls, **kwargs)
+                    color = kwargs.pop("color", lines[0].get_color())
+                    if plot_start:
+                        ax.plot(df[temp_curve].iloc[0], df.index[0], lw=0, marker=marker, color=color, **kwargs)
+                    if plot_end:
+                        ax.plot(df[temp_curve].iloc[-1], df.index[-1], lw=0, marker=marker, color=color, **kwargs)
+
+            final_state = copy.deepcopy(self)
+            return df, final_state
+        finally:
+            self.set_z(original_z)
 
     def is_inside_envelope(self, T_test, P_test, debug_plot=False):
         env = self.phase_envelope(step_size=0.05)

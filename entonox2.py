@@ -286,7 +286,7 @@ p_dew = df_idt_1[df_idt_1[("Fractions", "Vapor Fraction")] == 1].index[-1]
 t_dew = df_idt_1[df_idt_1[("Fractions", "Vapor Fraction")] == 1]["Temperature_C"].iloc[-1]
 
 
-df_cvd_1 = entonox.constant_volume_depletion(
+df_cvd_1, entonox_after_cvd = entonox.constant_volume_depletion(
     initial_temp=cold_temp,
     initial_pressure=p_cold,
     initial_n_total=1.0,
@@ -446,7 +446,7 @@ for p_i in pressures:
         df_cooling = entonox.isochoric_delta_T(p_i, 20, cold_temp)
         p_cold = df_cooling.index[-1]
 
-        df_disp = entonox.constant_volume_depletion(
+        df_disp, entonox_after_dispense = entonox.constant_volume_depletion(
             initial_temp=cold_temp,
             initial_pressure=p_cold,
             initial_n_total=1.0,
