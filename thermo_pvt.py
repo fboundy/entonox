@@ -555,6 +555,24 @@ class Mixture(cls):
 
                 region = self.phase_region(T_k, P_new)
 
+                # If liquid remains in the cylinder we expect the system to
+                # stay on the saturated (dew) line.  Numerical noise in the
+                # volume root finder can occasionally push the solution just
+                # outside the two-phase region which manifests as the CVD
+                # trajectory dropping away from the experimental dew curve.
+                # If this happens, explicitly snap the state back to the
+                # saturation pressure calculated for the current composition.
+                has_liquid_remaining = np.sum(n_species_liquid) > 1e-12
+                if has_liquid_remaining and region != Phase.TWO_PHASE:
+                    try:
+                        P_sat = self.bubble_pressure(T_k)[0]
+                    except Exception:
+                        P_sat = None
+
+                    if P_sat is not None and np.isfinite(P_sat):
+                        P_new = P_sat
+                        region = Phase.TWO_PHASE
+
                 if region == Phase.TWO_PHASE:  # Two-phase
                     flash = self.two_phase_tpflash(T_k, P_new)
                     betaV = flash.betaV
