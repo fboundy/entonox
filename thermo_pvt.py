@@ -420,26 +420,72 @@ class Mixture(cls):
 
                 return v_molar * n_total_after - V_total
 
-            a = pressures[-1] * 0.8
-            b = pressures[-1] * 1.2
+            # Use historical pressure vs. mol fraction data to predict the
+            # pressure bracket for the root finder when possible.
+            bracket_found = False
+            if len(pressures) >= 2 and len(n_total) >= 2:
+                mol_fraction_hist = np.array(n_total)
+                pressure_hist = np.array(pressures)
 
-            fa = volume_diff(a)
-            fb = volume_diff(b)
+                gradients = np.gradient(pressure_hist, mol_fraction_hist)
+                slope_last = gradients[-1]
+                delta_n = n_total_after - mol_fraction_hist[-1]
 
-            if verbose:
-                print(f"a: {a:6.1f} b: {a:6.1f} fa: {fa:6.1f} fb: {fb:6.1f} ")
+                P_est = pressure_hist[-1] + slope_last * delta_n
 
-            if np.isnan(fa) or np.isnan(fb) or fa * fb > 0:
-                if verbose:
-                    print(f"Warning: No root bracket found at step {step}, trying wider interval...")
-                a = pressures[-1] * 0.1
-                b = pressures[-1] * 10
+                curvature = 0.0
+                if len(gradients) >= 3:
+                    delta_n_prev = mol_fraction_hist[-1] - mol_fraction_hist[-2]
+                    if delta_n_prev != 0:
+                        curvature = (gradients[-1] - gradients[-2]) / delta_n_prev
+                    P_est += 0.5 * curvature * delta_n ** 2
+
+                P_est = max(P_est, 1e-6)
+
+                buffer = max(abs(slope_last * delta_n), 0.05 * P_est)
+                if curvature != 0.0:
+                    buffer = max(buffer, abs(0.5 * curvature * delta_n ** 2))
+
+                a = max(P_est - buffer, 1e-9)
+                b = P_est + buffer
+
                 fa = volume_diff(a)
                 fb = volume_diff(b)
-                if fa * fb > 0:
+
+                expand_factor = 1.5
+                attempts = 0
+                while (np.isnan(fa) or np.isnan(fb) or fa * fb > 0) and attempts < 5:
+                    buffer *= expand_factor
+                    a = max(P_est - buffer, 1e-9)
+                    b = P_est + buffer
+                    fa = volume_diff(a)
+                    fb = volume_diff(b)
+                    attempts += 1
+
+                if not (np.isnan(fa) or np.isnan(fb) or fa * fb > 0):
+                    bracket_found = True
+
+            if not bracket_found:
+                a = pressures[-1] * 0.8
+                b = pressures[-1] * 1.2
+
+                fa = volume_diff(a)
+                fb = volume_diff(b)
+
+                if verbose:
+                    print(f"a: {a:6.1f} b: {a:6.1f} fa: {fa:6.1f} fb: {fb:6.1f} ")
+
+                if np.isnan(fa) or np.isnan(fb) or fa * fb > 0:
                     if verbose:
-                        print("Still no bracket in wider interval. Stopping iteration.")
-                    break
+                        print(f"Warning: No root bracket found at step {step}, trying wider interval...")
+                    a = pressures[-1] * 0.1
+                    b = pressures[-1] * 10
+                    fa = volume_diff(a)
+                    fb = volume_diff(b)
+                    if fa * fb > 0:
+                        if verbose:
+                            print("Still no bracket in wider interval. Stopping iteration.")
+                        break
 
             P_new = brentq(volume_diff, a, b)
 
