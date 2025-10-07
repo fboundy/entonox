@@ -72,8 +72,23 @@ class Mixture(cls):
     def __init__(self, comps, z: tuple, **kwargs):
         self._z = np.array(z)
         self._components = comps.split(",")
+        self._comps_string = comps
+        self._init_kwargs = dict(kwargs)
+        self._interaction_params = {"kij": {}, "lij": {}}
         super().__init__(comps, **kwargs)
         self._phase_envelope_cache = None  # cache envelope
+
+    def __deepcopy__(self, memo):
+        new_obj = self.__class__(self._comps_string, tuple(self._z.copy()), **self._init_kwargs)
+
+        for (c1, c2), value in self._interaction_params["kij"].items():
+            new_obj.set_kij(c1, c2, value)
+
+        for (c1, c2), value in self._interaction_params["lij"].items():
+            new_obj.set_lij(c1, c2, value)
+
+        memo[id(self)] = new_obj
+        return new_obj
 
     def specific_volume(self, T, P, phase=2):
         return super().specific_volume(T, P, self._z, phase=phase)[0]
@@ -90,10 +105,12 @@ class Mixture(cls):
 
     def set_kij(self, c1, c2, kij):
         self._phase_envelope_cache = None  # reset cache
+        self._interaction_params["kij"][(c1, c2)] = kij
         return super().set_kij(c1, c2, kij)
 
     def set_lij(self, c1, c2, lij):
         self._phase_envelope_cache = None  # reset cache
+        self._interaction_params["lij"][(c1, c2)] = lij
         return super().set_lij(c1, c2, lij)
 
     def cricondenbar(self):
