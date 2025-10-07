@@ -435,22 +435,33 @@ class Mixture(cls):
                 z_new = n_species_after / n_total_after
                 self.set_z(z_new)
 
-                def volume_diff(P):
-                    region = self.phase_region(T_k, P)
+                # When there is liquid remaining in the cell the physical
+                # solution should continue along the saturation curve.  Allow
+                # the root finder to prioritise brackets that stay in the
+                # two-phase region.  If no such bracket is available we fall
+                # back to the general search which also considers single-phase
+                # states (e.g. once the last drop of liquid has evaporated).
+                liquid_moles = np.sum(n_species_liquid)
+                expect_two_phase = (
+                    liquid_moles > 1e-12 and regions[-1] == Phase.TWO_PHASE
+                )
 
-                    if region == Phase.LIQUID:  # Single liquid
+                def compute_volume_difference(P, require_two_phase):
+                    region_local = self.phase_region(T_k, P)
+
+                    if require_two_phase and region_local != Phase.TWO_PHASE:
+                        return None
+
+                    if region_local == Phase.LIQUID:  # Single liquid
                         v_molar = self.specific_volume(T_k, P, phase=1)
-                        vapor_frac = 0.0
-                    elif region == Phase.VAPOUR:  # Single vapor
+                    elif region_local == Phase.VAPOUR:  # Single vapor
                         v_molar = self.specific_volume(T_k, P, phase=2)
-                        vapor_frac = 1.0
                     else:  # Two-phase
-                        flash = self.two_phase_tpflash(T_k, P)
-                        betaV = flash.betaV
+                        flash_local = self.two_phase_tpflash(T_k, P)
+                        betaV_local = flash_local.betaV
                         v_vap = self.specific_volume(T_k, P, phase=2)
                         v_liq = self.specific_volume(T_k, P, phase=1)
-                        v_molar = betaV * v_vap + (1 - betaV) * v_liq
-                        vapor_frac = betaV
+                        v_molar = betaV_local * v_vap + (1 - betaV_local) * v_liq
 
                     return v_molar * n_total_after - V_total
 
@@ -460,7 +471,7 @@ class Mixture(cls):
                 if prev_total_moles > 0:
                     ideal_guess = prev_pressure * (n_total_after / prev_total_moles)
 
-                def try_expand(center, f_center):
+                def try_expand(center, f_center, require_two_phase):
                     if center <= 0 or not np.isfinite(f_center):
                         return None
 
@@ -475,16 +486,16 @@ class Mixture(cls):
 
                     for _ in range(12):
                         lower = max(lower / expansion, min_pressure)
-                        f_lower = volume_diff(lower)
-                        if np.isfinite(f_lower):
+                        f_lower = compute_volume_difference(lower, require_two_phase)
+                        if f_lower is not None and np.isfinite(f_lower):
                             if abs(f_lower) < root_tol:
                                 return ("root", lower)
                             if f_lower * f_center < 0:
                                 return ("bracket", min(lower, center), max(lower, center))
 
                         upper = min(upper * expansion, max_pressure)
-                        f_upper = volume_diff(upper)
-                        if np.isfinite(f_upper):
+                        f_upper = compute_volume_difference(upper, require_two_phase)
+                        if f_upper is not None and np.isfinite(f_upper):
                             if abs(f_upper) < root_tol:
                                 return ("root", upper)
                             if f_upper * f_center < 0:
@@ -495,52 +506,65 @@ class Mixture(cls):
                 bracket = None
                 root_pressure = None
 
-                for guess in [ideal_guess, prev_pressure]:
-                    if guess <= 0 or not np.isfinite(guess):
-                        continue
-                    f_guess = volume_diff(guess)
-                    if not np.isfinite(f_guess):
-                        continue
-                    result = try_expand(guess, f_guess)
-                    if result is None:
-                        continue
-                    kind, *values = result
-                    if kind == "root":
-                        root_pressure = values[0]
-                        break
-                    if kind == "bracket":
-                        bracket = tuple(values)
-                        break
+                def search_for_pressure(require_two_phase):
+                    local_bracket = None
+                    local_root = None
 
-                if root_pressure is None and bracket is None:
-                    if verbose:
-                        print(
-                            "Warning: Falling back to wide pressure scan to bracket root at step",
-                            step,
-                        )
-                    scan_min = max(min_pressure, prev_pressure * 1e-3)
-                    scan_max = min(max_pressure, prev_pressure * 1e3)
-                    if scan_min >= scan_max:
-                        scan_max = scan_min * 1.01
-                    scan_pressures = np.geomspace(scan_min, scan_max, num=25)
-                    scan_values = []
-                    for p in scan_pressures:
-                        val = volume_diff(p)
-                        scan_values.append(val)
-                    for idx in range(len(scan_pressures) - 1):
-                        f1 = scan_values[idx]
-                        f2 = scan_values[idx + 1]
-                        if not np.isfinite(f1) or not np.isfinite(f2):
+                    for guess in [ideal_guess, prev_pressure]:
+                        if guess <= 0 or not np.isfinite(guess):
                             continue
-                        if abs(f1) < root_tol:
-                            root_pressure = scan_pressures[idx]
+                        f_guess = compute_volume_difference(guess, require_two_phase)
+                        if f_guess is None or not np.isfinite(f_guess):
+                            continue
+                        result = try_expand(guess, f_guess, require_two_phase)
+                        if result is None:
+                            continue
+                        kind, *values = result
+                        if kind == "root":
+                            local_root = values[0]
                             break
-                        if abs(f2) < root_tol:
-                            root_pressure = scan_pressures[idx + 1]
+                        if kind == "bracket":
+                            local_bracket = tuple(values)
                             break
-                        if f1 * f2 < 0:
-                            bracket = (scan_pressures[idx], scan_pressures[idx + 1])
-                            break
+
+                    if local_root is None and local_bracket is None:
+                        if verbose:
+                            print(
+                                "Warning: Falling back to wide pressure scan to bracket root at step",
+                                step,
+                            )
+                        scan_min = max(min_pressure, prev_pressure * 1e-3)
+                        scan_max = min(max_pressure, prev_pressure * 1e3)
+                        if scan_min >= scan_max:
+                            scan_max = scan_min * 1.01
+                        scan_pressures = np.geomspace(scan_min, scan_max, num=25)
+                        scan_values = []
+                        for p in scan_pressures:
+                            val = compute_volume_difference(p, require_two_phase)
+                            scan_values.append(val)
+                        for idx in range(len(scan_pressures) - 1):
+                            f1 = scan_values[idx]
+                            f2 = scan_values[idx + 1]
+                            if f1 is None or f2 is None:
+                                continue
+                            if not np.isfinite(f1) or not np.isfinite(f2):
+                                continue
+                            if abs(f1) < root_tol:
+                                local_root = scan_pressures[idx]
+                                break
+                            if abs(f2) < root_tol:
+                                local_root = scan_pressures[idx + 1]
+                                break
+                            if f1 * f2 < 0:
+                                local_bracket = (scan_pressures[idx], scan_pressures[idx + 1])
+                                break
+
+                    return local_root, local_bracket
+
+                root_pressure, bracket = search_for_pressure(expect_two_phase)
+
+                if root_pressure is None and bracket is None and expect_two_phase:
+                    root_pressure, bracket = search_for_pressure(False)
 
                 if root_pressure is None and bracket is None:
                     if verbose:
@@ -551,7 +575,11 @@ class Mixture(cls):
                     P_new = root_pressure
                 else:
                     a, b = bracket
-                    P_new = brentq(volume_diff, a, b)
+                    P_new = brentq(
+                        lambda pressure: compute_volume_difference(pressure, False),
+                        a,
+                        b,
+                    )
 
                 region = self.phase_region(T_k, P_new)
 
