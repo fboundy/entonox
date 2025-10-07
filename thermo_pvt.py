@@ -426,6 +426,9 @@ class Mixture(cls):
             fa = volume_diff(a)
             fb = volume_diff(b)
 
+            if verbose:
+                print(f"a: {a:6.1f} b: {a:6.1f} fa: {fa:6.1f} fb: {fb:6.1f} ")
+
             if np.isnan(fa) or np.isnan(fb) or fa * fb > 0:
                 if verbose:
                     print(f"Warning: No root bracket found at step {step}, trying wider interval...")
@@ -439,6 +442,9 @@ class Mixture(cls):
                     break
 
             P_new = brentq(volume_diff, a, b)
+
+            if verbose:
+                print(f"a: {a:6.1f} b: {a:6.1f} fa: {fa:6.1f} fb: {fb:6.1f} P_new {P_new:6.1f}")
 
             z_new = n_species_after / np.sum(n_species_after)
             self.set_z(z_new)
