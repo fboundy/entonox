@@ -141,8 +141,8 @@ figs = []
 initial_temp = 20
 cold_temp = -20
 pi = 3000 / 14.50377  # bar gauge pressure
-cold_usage = 0.40
-warm_temp = 0
+cold_usage = 0.50
+warm_temp = 10
 
 # %%
 entonox = tp.Mixture("N2O,O2", (0.5, 0.5), mixing="classic")
@@ -275,8 +275,6 @@ entonox.set_kij(1, 2, kij)
 entonox.set_lij(1, 2, lij)
 env = entonox.phase_envelope(t_min=233)
 
-nobic = tp.Mixture("N2O,O2", (0.5, 0.5))
-
 levels = np.arange(0.25, 1, 0.05)  # or 0.1
 
 pi_pa = tp.convert_pressure(pi, "bar", inverse=True)
@@ -292,38 +290,25 @@ df_cvd_1 = entonox.constant_volume_depletion(
     initial_temp=cold_temp,
     initial_pressure=p_cold,
     initial_n_total=1.0,
-    mol_fraction_to_remove=1.0,
+    mol_fraction_to_remove=cold_usage,
 )
 
-df_cvd_2 = original.constant_volume_depletion(
-    initial_temp=cold_temp,
-    initial_pressure=p_cold,
-    initial_n_total=1.0,
-    mol_fraction_to_remove=1.0,
-    step_size=0.002,
-)
-
-df_cvd_3 = nobic.constant_volume_depletion(
-    initial_temp=cold_temp,
-    initial_pressure=p_cold,
-    initial_n_total=1.0,
-    mol_fraction_to_remove=1.0,
-)
-
-
-# %%
-p_dew2 = df_cvd_1[df_cvd_1[("Fractions", "Vapor Fraction")] < 1].index[-1]
-z_dew2 = df_cvd_1[df_cvd_1[("Fractions", "Vapor Fraction")] == 1][("Vapor", "N2O")].iloc[0]
-n_dew2 = df_cvd_1[df_cvd_1[("Fractions", "Vapor Fraction")] == 1][("Total", "N2O")].iloc[0]
+p2 = df_cvd_1.index[-1]
+z2 = df_cvd_1[("Vapor", "N2O")].iloc[-1]
+n2 = df_cvd_1[("Total", "N2O")].iloc[-1]
 
 points = {
     "A": (initial_temp, pi, 0.5, 0.5),
     "B": (t_dew, p_dew, 0.5, 0.5),
     "C": (cold_temp, p_cold, df_idt_1[("Vapor", "N2O")].iloc[-1], df_idt_1[("Total", "N2O")].iloc[-1]),
-    "D": (cold_temp, p_dew2, z_dew2, n_dew2),
-    "E": (cold_temp, 0, z_dew2, n_dew2),
+    "D": (cold_temp, p2, z2, n2),
+    "E": (initial_temp, p2, z2, n2),
 }
 
+# Now consider warming to 10°C
+warm_temp
+df_idt_2 = entonox.isochoric_delta_T(p2, cold_temp, warm_temp, ax=ax, plot_start=True, plot_end=False)
+#%%
 
 # fig1, ax1 = plt.subplots(1, 1, figsize=(8, 6), layout="tight")
 # fig2, ax2 = plt.subplots(1, 1, figsize=(8, 6), layout="tight")
@@ -449,6 +434,7 @@ max_n2o_gas = {}
 
 temps = range(-40, 0, 5)
 pressures = range(100, 250, 50)
+df_disp = {}
 for p_i in pressures:
     results[p_i] = {}
     max_n2o_gas[p_i] = []
@@ -484,6 +470,4 @@ ax.set_xlabel("Cooling Temperature [°C]")
 ax.set_ylabel("Maximum Gas N2O Concentration [%]")
 ax.legend()
 figs.append(fig)
-# %%
-results[200][-15][("Vapor", "N2O")].plot()
 # %%
